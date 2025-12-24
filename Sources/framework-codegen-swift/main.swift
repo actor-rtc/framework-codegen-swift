@@ -3,7 +3,15 @@ import SwiftProtobufPluginLibrary
 
 @main
 struct ActrFrameworkGenerator {
+    static let version = "0.1.2"
+
     static func main() throws {
+        // Handle command line arguments
+        if CommandLine.arguments.contains("--version") || CommandLine.arguments.contains("-v") {
+            print(version)
+            return
+        }
+
         // Read the request from stdin
         let requestData = FileHandle.standardInput.readDataToEndOfFile()
         let request = try Google_Protobuf_Compiler_CodeGeneratorRequest(serializedBytes: requestData)
