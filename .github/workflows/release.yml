@@ -1,0 +1,25 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build release artifact
+        run: scripts/build-release.sh
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/protoc-gen-actrframework-swift-macos-arm64.zip
+            dist/protoc-gen-actrframework-swift-macos-arm64.zip.sha256
+          generate_release_notes: true
