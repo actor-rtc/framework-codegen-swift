@@ -3,7 +3,7 @@ class ProtocGenActrframeworkSwift < Formula
   homepage "https://github.com/actor-rtc/framework-codegen-swift"
   version "0.1.2"
   url "https://github.com/actor-rtc/framework-codegen-swift/releases/download/v#{version}/protoc-gen-actrframework-swift-macos-arm64.zip"
-  sha256 "be28d7b92822b2aba08ae35f28b04aa996b932e9b350d04efef8762e68ab9445"
+  sha256 "2a1c88a17b73bebc46c76689e8a30b3c43fbd1b4d4e23da2b9e32c6c63ff3844"
 
   depends_on arch: :arm64
   depends_on macos: :ventura
