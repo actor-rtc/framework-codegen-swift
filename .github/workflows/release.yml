@@ -27,3 +27,29 @@ jobs:
             dist/protoc-gen-actrframework-swift-macos-arm64.zip
             dist/protoc-gen-actrframework-swift-macos-arm64.zip.sha256
           generate_release_notes: true
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          SHA256=$(cat dist/protoc-gen-actrframework-swift-macos-arm64.zip.sha256)
+          
+          # Clone the tap repository
+          git clone https://x-access-token:${GH_TOKEN}@github.com/actor-rtc/homebrew-tap.git tap
+          
+          # Update the formula file
+          FORMULA="tap/Formula/protoc-gen-actrframework-swift.rb"
+          
+          # Use sed to update version and sha256
+          # On macOS runners, sed -i requires an empty extension
+          sed -i '' "s/version \".*\"/version \"$VERSION\"/" "$FORMULA"
+          sed -i '' "s/sha256 \".*\"/sha256 \"$SHA256\"/" "$FORMULA"
+          
+          # Commit and push
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Update to v$VERSION: $SHA256" || echo "No changes to commit"
+          git push
