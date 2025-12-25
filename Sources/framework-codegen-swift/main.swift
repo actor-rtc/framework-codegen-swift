@@ -3,7 +3,7 @@ import SwiftProtobufPluginLibrary
 
 @main
 struct ActrFrameworkGenerator {
-    static let version = "0.1.2"
+    static let version = "0.1.3"
 
     static func main() throws {
         // Handle command line arguments
