@@ -16,6 +16,19 @@ struct ActrFrameworkGenerator {
         let requestData = FileHandle.standardInput.readDataToEndOfFile()
         let request = try Google_Protobuf_Compiler_CodeGeneratorRequest(serializedBytes: requestData)
 
+        // Parse parameters
+        let parameters = request.parameter.split(separator: ",").reduce(into: [String: String]()) { dict, pair in
+            let parts = pair.split(separator: "=", maxSplits: 1)
+            if parts.count == 2 {
+                dict[String(parts[0])] = String(parts[1])
+            } else {
+                dict[String(parts[0])] = ""
+            }
+        }
+        let visibility = parameters["Visibility"] ?? "Internal"
+        let isPublic = visibility.lowercased() == "public"
+        let accessModifier = isPublic ? "public " : ""
+
         var response = Google_Protobuf_Compiler_CodeGeneratorResponse()
 
         for fileDescriptor in request.protoFile {
@@ -65,7 +78,7 @@ struct ActrFrameworkGenerator {
 
                 /// }
                 /// ```
-                public protocol \(handlerProtocol): Sendable {
+                \(accessModifier)protocol \(handlerProtocol): Sendable {
                 """
 
                 for method in service.method {
@@ -102,9 +115,9 @@ struct ActrFrameworkGenerator {
                     content += """
 
                     extension \(inputType): RpcRequest {
-                        typealias Response = \(outputType)
+                        \(accessModifier)typealias Response = \(outputType)
 
-                        static var routeKey: String { "\(routeKey)" }
+                        \(accessModifier)static var routeKey: String { "\(routeKey)" }
                     }
                     """
                 }
