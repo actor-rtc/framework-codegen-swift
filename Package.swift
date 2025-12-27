@@ -12,12 +12,14 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.28.2"),
+        .package(url: "https://github.com/actor-rtc/actr-protocols-swift.git", from: "0.1.0"),
     ],
     targets: [
         .executableTarget(
             name: "framework-codegen-swift",
             dependencies: [
                 .product(name: "SwiftProtobufPluginLibrary", package: "swift-protobuf"),
+                .product(name: "ActrProtocols", package: "actr-protocols-swift"),
             ]
         ),
     ]

@@ -3,7 +3,7 @@ import SwiftProtobufPluginLibrary
 
 @main
 struct ActrFrameworkGenerator {
-    static let version = "0.1.3"
+    static let version = "0.1.4"
 
     static func main() throws {
         // Handle command line arguments
@@ -34,7 +34,6 @@ struct ActrFrameworkGenerator {
             // Determine the prefix for Swift types based on package name
             // SwiftProtobuf usually removes underscores and camelCases the package name
             let packagePrefix = fileDescriptor.package.isEmpty ? "" : fileDescriptor.package.split(separator: "_").map { $0.capitalized }.joined() + "_"
-            let protoPackage = fileDescriptor.package
 
             for service in fileDescriptor.service {
                 let serviceName = service.name
@@ -86,6 +85,29 @@ struct ActrFrameworkGenerator {
                 }
 
                 content += "\n}\n"
+
+                // Generate RpcRequest implementations for each method's input type
+                for method in service.method {
+                    let inputType = packagePrefix + method.inputType.split(separator: ".").last!
+                    let outputType = packagePrefix + method.outputType.split(separator: ".").last!
+
+                    // Build routeKey from package, service name, and method name
+                    let routeKey: String
+                    if fileDescriptor.package.isEmpty {
+                        routeKey = "\(serviceName).\(method.name)"
+                    } else {
+                        routeKey = "\(fileDescriptor.package).\(serviceName).\(method.name)"
+                    }
+
+                    content += """
+
+                    extension \(inputType): RpcRequest {
+                        typealias Response = \(outputType)
+
+                        static var routeKey: String { "\(routeKey)" }
+                    }
+                    """
+                }
             }
 
             var generatedFile = Google_Protobuf_Compiler_CodeGeneratorResponse.File()
