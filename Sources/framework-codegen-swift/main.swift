@@ -5,6 +5,11 @@ import SwiftProtobufPluginLibrary
 struct ActrFrameworkGenerator {
     static let version = "0.1.5"
 
+    struct RemoteServiceInfo {
+        let serviceName: String
+        let routeKeys: [String]
+    }
+
     static func main() throws {
         // Handle command line arguments
         if CommandLine.arguments.contains("--version") || CommandLine.arguments.contains("-v") {
@@ -28,11 +33,59 @@ struct ActrFrameworkGenerator {
         let visibility = parameters["Visibility"] ?? "Internal"
         let isPublic = visibility.lowercased() == "public"
         let accessModifier = isPublic ? "public " : ""
+        let manufacturer = parameters["Manufacturer"] ?? "acme"
+
+        let localFileParam = parameters["LocalFile"]
+        let protoSourceParam = parameters["ProtoSource"]?.lowercased()
+        let globalProtoSource = protoSourceParam ?? (localFileParam != nil ? "remote" : "local")
+
+        let remoteFilesParam = Set((parameters["RemoteFiles"] ?? "").split(separator: ":").map(String.init))
+
+        // First pass: Collect info about all files and identify all Remote services
+        var remoteServices: [RemoteServiceInfo] = []
+        for fileDescriptor in request.protoFile {
+            let isRemote: Bool
+            if remoteFilesParam.contains(fileDescriptor.name) {
+                isRemote = true
+            } else if localFileParam == fileDescriptor.name {
+                isRemote = false
+            } else {
+                isRemote = globalProtoSource == "remote"
+            }
+
+            if isRemote {
+                for service in fileDescriptor.service {
+                    let serviceName = service.name
+                    var routeKeys: [String] = []
+                    for method in service.method {
+                        let routeKey: String
+                        if fileDescriptor.package.isEmpty {
+                            routeKey = "\(serviceName).\(method.name)"
+                        } else {
+                            routeKey = "\(fileDescriptor.package).\(serviceName).\(method.name)"
+                        }
+                        routeKeys.append(routeKey)
+                    }
+                    remoteServices.append(RemoteServiceInfo(serviceName: serviceName, routeKeys: routeKeys))
+                }
+            }
+        }
 
         var response = Google_Protobuf_Compiler_CodeGeneratorResponse()
 
+        // Second pass: Generate content for each file
         for fileDescriptor in request.protoFile {
-            if fileDescriptor.service.isEmpty { continue }
+            let isRemote: Bool
+            if remoteFilesParam.contains(fileDescriptor.name) {
+                isRemote = true
+            } else if localFileParam == fileDescriptor.name {
+                isRemote = false
+            } else {
+                isRemote = globalProtoSource == "remote"
+            }
+
+            // Skip generating files without services and not marked as LocalFile
+            if fileDescriptor.service.isEmpty, localFileParam != fileDescriptor.name { continue }
 
             var content = """
             // DO NOT EDIT.
@@ -44,88 +97,180 @@ struct ActrFrameworkGenerator {
 
             """
 
-            // Determine the prefix for Swift types based on package name
-            // SwiftProtobuf usually removes underscores and camelCases the package name
             let packagePrefix = fileDescriptor.package.isEmpty ? "" : fileDescriptor.package.split(separator: "_").map { $0.capitalized }.joined() + "_"
 
-            for service in fileDescriptor.service {
-                let serviceName = service.name
-                let handlerProtocol = "\(serviceName)Handler"
+            // For Local mode with no services, generate a generic Workload from package name
+            if !isRemote, fileDescriptor.service.isEmpty {
+                let pkgName = fileDescriptor.package.isEmpty ? "Client" : fileDescriptor.package.split(separator: "_").map { $0.capitalized }.joined()
+                let workloadName = "\(pkgName)Workload"
 
                 content += """
 
-                /// \(serviceName) service handler protocol - users need to implement this protocol
-                ///
-                /// Example implementation:
-                /// ```swift
-                /// struct My\(serviceName)Handler: \(handlerProtocol) {
+                /// \(pkgName) workload wrapper - automatically generated for empty local proto
+                \(accessModifier)actor \(workloadName) {
+                    \(accessModifier)init() {}
+                }
+
+                extension \(workloadName) {
+                    \(accessModifier)func __dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data {
+                        switch envelope.routeKey {
                 """
 
-                for method in service.method {
-                    let methodName = method.name.prefix(1).lowercased() + method.name.dropFirst()
-                    let inputType = packagePrefix + method.inputType.split(separator: ".").last!
-                    let outputType = packagePrefix + method.outputType.split(separator: ".").last!
-
+                // Integrated Remote Methods (Proxying)
+                for remote in remoteServices {
+                    let quotedKeys = remote.routeKeys.map { "\"\($0)\"" }.joined(separator: ",\n             ")
                     content += """
 
-                    ///     func \(methodName)(req: \(inputType), ctx: ContextBridge) async throws -> \(outputType) {
-                    ///         return \(outputType)()
-                    ///     }
+                        case \(quotedKeys):
+                            let targetType = ActrType(manufacturer: "\(manufacturer)", name: "\(remote.serviceName)")
+                            let targetId = try await ctx.discover(targetType: targetType)
+                            return try await ctx.callRaw(
+                                target: targetId,
+                                routeKey: envelope.routeKey,
+                                payloadType: .rpcReliable,
+                                payload: envelope.payload,
+                                timeoutMs: 30000
+                            )
                     """
                 }
 
                 content += """
 
-                /// }
-                /// ```
-                \(accessModifier)protocol \(handlerProtocol): Sendable {
-                """
-
-                for method in service.method {
-                    let methodName = method.name.prefix(1).lowercased() + method.name.dropFirst()
-                    let inputType = packagePrefix + method.inputType.split(separator: ".").last!
-                    let outputType = packagePrefix + method.outputType.split(separator: ".").last!
-
-                    content += """
-
-                        /// RPC method: \(method.name)
-                        func \(methodName)(
-                            req: \(inputType),
-                            ctx: ContextBridge
-                        ) async throws -> \(outputType)
-
-                    """
+                        default:
+                            throw ActrError.WorkloadError(msg: "Unknown route: \\(envelope.routeKey)")
+                        }
+                    }
                 }
 
-                content += "\n}\n"
+                """
+            } else {
+                for service in fileDescriptor.service {
+                    let serviceName = service.name
+                    let handlerProtocol = "\(serviceName)Handler"
 
-                // Generate RpcRequest implementations for each method's input type
-                for method in service.method {
-                    let inputType = packagePrefix + method.inputType.split(separator: ".").last!
-                    let outputType = packagePrefix + method.outputType.split(separator: ".").last!
+                    // 1. Generate Handler Protocol (Local only)
+                    if !isRemote {
+                        content += """
 
-                    // Build routeKey from package, service name, and method name
-                    let routeKey: String
-                    if fileDescriptor.package.isEmpty {
-                        routeKey = "\(serviceName).\(method.name)"
-                    } else {
-                        routeKey = "\(fileDescriptor.package).\(serviceName).\(method.name)"
+                        /// \(serviceName) service handler protocol - users need to implement this protocol
+                        \(accessModifier)protocol \(handlerProtocol): Sendable {
+                        """
+
+                        for method in service.method {
+                            let methodName = method.name.prefix(1).lowercased() + method.name.dropFirst()
+                            let inputType = packagePrefix + method.inputType.split(separator: ".").last!
+                            let outputType = packagePrefix + method.outputType.split(separator: ".").last!
+
+                            content += """
+
+                            /// RPC method: \(method.name)
+                            func \(methodName)(
+                                req: \(inputType),
+                                ctx: ContextBridge
+                            ) async throws -> \(outputType)
+
+                            """
+                        }
+
+                        content += "\n}\n"
                     }
 
-                    content += """
+                    // 2. Generate RpcRequest extensions
+                    for method in service.method {
+                        let inputType = packagePrefix + method.inputType.split(separator: ".").last!
+                        let outputType = packagePrefix + method.outputType.split(separator: ".").last!
 
-                    extension \(inputType): RpcRequest {
-                        \(accessModifier)typealias Response = \(outputType)
+                        let routeKey: String
+                        if fileDescriptor.package.isEmpty {
+                            routeKey = "\(serviceName).\(method.name)"
+                        } else {
+                            routeKey = "\(fileDescriptor.package).\(serviceName).\(method.name)"
+                        }
 
-                        \(accessModifier)static var routeKey: String { "\(routeKey)" }
+                        content += """
+
+                        extension \(inputType): RpcRequest {
+                            \(accessModifier)typealias Response = \(outputType)
+
+                            \(accessModifier)static var routeKey: String { "\(routeKey)" }
+                        }
+                        """
                     }
-                    """
+
+                    // 3. Generate Workload actor (Local only)
+                    if !isRemote {
+                        let workloadName = "\(serviceName)Workload"
+                        content += """
+
+                        /// \(serviceName) workload wrapper - wraps the user's handler implementation
+                        \(accessModifier)actor \(workloadName)<T: \(handlerProtocol)> {
+                            \(accessModifier)let handler: T
+
+                            \(accessModifier)init(handler: T) {
+                                self.handler = handler
+                            }
+                        }
+
+                        extension \(workloadName) {
+                            \(accessModifier)func __dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data {
+                                switch envelope.routeKey {
+                        """
+
+                        // Local Methods
+                        for method in service.method {
+                            let methodName = method.name.prefix(1).lowercased() + method.name.dropFirst()
+                            let inputType = packagePrefix + method.inputType.split(separator: ".").last!
+
+                            let routeKey: String
+                            if fileDescriptor.package.isEmpty {
+                                routeKey = "\(serviceName).\(method.name)"
+                            } else {
+                                routeKey = "\(fileDescriptor.package).\(serviceName).\(method.name)"
+                            }
+
+                            content += """
+
+                            case "\(routeKey)":
+                                let req = try \(inputType)(serializedBytes: envelope.payload)
+                                let resp = try await handler.\(methodName)(req: req, ctx: ctx)
+                                return try resp.serializedData()
+                            """
+                        }
+
+                        // Integrated Remote Methods (Proxying)
+                        for remote in remoteServices {
+                            let quotedKeys = remote.routeKeys.map { "\"\($0)\"" }.joined(separator: ",\n                 ")
+                            content += """
+
+                            case \(quotedKeys):
+                                let targetType = ActrType(manufacturer: "\(manufacturer)", name: "\(remote.serviceName)")
+                                let targetId = try await ctx.discover(targetType: targetType)
+                                return try await ctx.callRaw(
+                                    target: targetId,
+                                    routeKey: envelope.routeKey,
+                                    payloadType: .rpcReliable,
+                                    payload: envelope.payload,
+                                    timeoutMs: 30000
+                                )
+                            """
+                        }
+
+                        content += """
+
+                                default:
+                                    throw ActrError.WorkloadError(msg: "Unknown route: \\(envelope.routeKey)")
+                                }
+                            }
+                        }
+
+                        """
+                    }
                 }
             }
 
             var generatedFile = Google_Protobuf_Compiler_CodeGeneratorResponse.File()
-            // Change suffix from .actr.swift to .actor.swift
-            generatedFile.name = fileDescriptor.name.replacingOccurrences(of: ".proto", with: ".actor.swift")
+            let suffix = isRemote ? ".client.swift" : ".actor.swift"
+            generatedFile.name = fileDescriptor.name.replacingOccurrences(of: ".proto", with: suffix)
             generatedFile.content = content
             response.file.append(generatedFile)
         }
